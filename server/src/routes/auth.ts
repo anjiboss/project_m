@@ -12,117 +12,153 @@ import {
 } from "../constants/tokenConstant";
 import { Profile } from "../entity/Profile";
 import { jwtDecode, jwtVerify } from "../utils/jwtController";
+import { body, validationResult } from "express-validator";
 
 const router = express.Router();
 
 // SECTION Register Route
-router.post("/register", async (req, res) => {
-  const { email, username, password, firstname, lastname } = req.body;
+router.post(
+  "/register",
+  // Input validation
+  body("email").isEmail().withMessage("Email is not valid"),
+  body("username")
+    .isLength({ min: 5, max: undefined })
+    .withMessage("Username must be at least 5 characters long"),
+  body("password").isLength({ min: 8 }).isStrongPassword({
+    minLength: 8,
+    minLowercase: 1,
+    minUppercase: 1,
+    minNumbers: 1,
+    minSymbols: 1,
+    pointsPerUnique: 1,
+    pointsPerRepeat: 0.5,
+    pointsForContainingLower: 10,
+    pointsForContainingUpper: 10,
+    pointsForContainingNumber: 10,
+    pointsForContainingSymbol: 10,
+  }),
+  // ---------
+  async (req, res) => {
+    const { email, username, password, firstname, lastname } = req.body;
+    // Finds the validation errors in this request and wraps them in an object with handy functions
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
 
-  //ANCHOR Find is the email existed
-  const userRepo = getRepository(User);
-  const profileRepo = getRepository(Profile);
-  const checkEmail = await userRepo.findOne({
-    where: {
-      email: email,
-    },
-  });
-  //ANCHOR 1 Filter: check email
-  if (checkEmail) {
-    return res.status(400).json({
-      success: false,
-      message: "Email already existed!",
-    });
-  } else {
-    //ANCHOR 2 Filter: check username
-    const checkUsername = await profileRepo.findOne({
+    //ANCHOR Find is the email existed
+    const userRepo = getRepository(User);
+    const profileRepo = getRepository(Profile);
+    const checkEmail = await userRepo.findOne({
       where: {
-        username: username,
+        email: email,
       },
     });
-    if (checkUsername) {
+    //ANCHOR 1 Filter: check email
+    if (checkEmail) {
       return res.status(400).json({
         success: false,
-        message: "Username already existed!",
+        message: "Email already existed!",
       });
     } else {
-      //ANCHOR Success data insert
-      // bcrypt the password
-      const hashedPassword = await bcrypt.hash(password, 10);
-      // insert user into database
-      const newUser = new User();
-      newUser.email = email;
-      newUser.password = hashedPassword;
-
-      const newProfile = new Profile();
-      newProfile.firstname = firstname;
-      newProfile.lastname = lastname;
-      newProfile.username = username;
-      await profileRepo.save(newProfile);
-
-      newUser.profile = newProfile;
-      userRepo.save(newUser);
-
-      return res.status(200).json({
-        success: true,
-        message: "Register success!",
+      //ANCHOR 2 Filter: check username
+      const checkUsername = await profileRepo.findOne({
+        where: {
+          username: username,
+        },
       });
+      if (checkUsername) {
+        return res.status(400).json({
+          success: false,
+          message: "Username already existed!",
+        });
+      } else {
+        //ANCHOR Success data insert
+        // bcrypt the password
+        const hashedPassword = await bcrypt.hash(password, 10);
+        // insert user into database
+        const newUser = new User();
+        newUser.email = email;
+        newUser.password = hashedPassword;
+
+        const newProfile = new Profile();
+        newProfile.firstname = firstname;
+        newProfile.lastname = lastname;
+        newProfile.username = username;
+        await profileRepo.save(newProfile);
+
+        newUser.profile = newProfile;
+        userRepo.save(newUser);
+
+        return res.status(200).json({
+          success: true,
+          message: "Register success!",
+        });
+      }
     }
   }
-});
+);
 // !SECTION
 
 // SECTION Login Route
 router.post("/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { username, password } = req.body;
     //ANCHOR Check If Email Existed
     const userRepo = getRepository(User);
-    const userCheck = await userRepo.findOne({
-      select: ["id", "password", "refreshToken"],
+    const profileRepo = getRepository(Profile);
+    const checkProfile = await profileRepo.findOne({
       where: {
-        email: email,
+        username,
       },
-      relations: ["profile"],
+      relations: ["user"],
     });
     // ANCHOR 1 filter: Email validation
-    if (!userCheck) {
-      return res
-        .status(400)
-        .json({ success: false, message: "User not found!" });
+    if (!checkProfile) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          message: "User not found",
+        },
+      });
     }
     // ANCHOR 2 filter : Password validation
-    const validPassword = await bcrypt.compare(password, userCheck.password);
+    const validPassword = await bcrypt.compare(
+      password,
+      checkProfile.user.password
+    );
     if (!validPassword) {
       return res
         .status(400)
-        .json({ success: false, message: "Wrong password!" });
+        .json({ success: false, message: "Username or password not correct" });
     }
     //ANCHOR Success sending JWT
-    // Create a plaintext payload for the JWT
-    const userInform = { id: userCheck.profile.id };
-    const accessToken = Jwt.sign(userInform, accessTokenSecret!, {
+    const accessToken = Jwt.sign({ id: checkProfile.id }, accessTokenSecret!, {
       expiresIn: accessToken_Exp,
     });
-    const refreshToken = Jwt.sign(userInform, refreshTokenSecret!, {
-      expiresIn: refreshToken_Exp,
-    });
+    const refreshToken = Jwt.sign(
+      { id: checkProfile.id },
+      refreshTokenSecret!,
+      {
+        expiresIn: refreshToken_Exp,
+      }
+    );
     let newRefreshToken: string[];
     //process refreshToken saving
-    if (!userCheck.refreshToken) {
+    if (!checkProfile.user.refreshToken) {
       newRefreshToken = [refreshToken];
     } else {
-      newRefreshToken = userCheck.refreshToken;
+      newRefreshToken = checkProfile.user.refreshToken;
       newRefreshToken.push(refreshToken);
     }
-    userCheck.refreshToken = newRefreshToken;
-    userRepo.save(userCheck);
+    checkProfile.user.refreshToken = newRefreshToken;
+    userRepo.save(checkProfile.user);
     return res.status(200).json({
       success: true,
       message: "Valid email & password.",
       accessToken: accessToken,
       refreshToken: refreshToken,
-      userCheck,
+      checkProfile,
     });
   } catch (e) {
     console.log(e);

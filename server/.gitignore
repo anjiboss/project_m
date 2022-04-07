@@ -9,3 +9,5 @@ dist
 ormconfig.json
 
 yarn-error.log
+
+test.ts
